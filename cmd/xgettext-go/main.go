@@ -8,9 +8,13 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"log"
+	"reflect"
+	"sort"
 )
 
 func main() {
@@ -20,22 +24,57 @@ func main() {
 		log.Fatal(firstErr)
 	}
 
+	var files []*ast.File
 	for _, pkg := range pkgs {
 		for _, f := range pkg.Files {
-
-			ast.Inspect(f, func(n ast.Node) bool {
-				var s string
-				switch x := n.(type) {
-				case *ast.BasicLit:
-					s = x.Value
-				case *ast.Ident:
-					s = x.Name
-				}
-				if s != "" {
-					fmt.Printf("%s:\t%s\n", fset.Position(n.Pos()), s)
-				}
-				return true
-			})
+			files = append(files, f)
 		}
 	}
+
+	// https://github.com/golang/go/issues/26504
+	config := types.Config{
+		Importer:    importer.For("source", nil),
+		FakeImportC: true,
+	}
+	info := &types.Info{
+		Types:      make(map[ast.Expr]types.TypeAndValue),
+		Defs:       make(map[*ast.Ident]types.Object),
+		Uses:       make(map[*ast.Ident]types.Object),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+	}
+
+	pkg, err := config.Check("", fset, files, info)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, node := range getSortedKeys(info.Uses) {
+		fmt.Println("use:", node)
+	}
+
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			return true
+		})
+	}
+
+	_ = pkg
+}
+
+func getSortedKeys(m interface{}) []ast.Node {
+	mValue := reflect.ValueOf(m)
+	nodes := make([]ast.Node, mValue.Len())
+
+	keys := mValue.MapKeys()
+	for i := range keys {
+		nodes[i] = keys[i].Interface().(ast.Node)
+	}
+
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Pos() == nodes[j].Pos() {
+			return nodes[i].End() < nodes[j].End()
+		}
+		return nodes[i].Pos() < nodes[j].Pos()
+	})
+
+	return nodes
 }
