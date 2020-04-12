@@ -8,13 +8,9 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/importer"
 	"go/parser"
 	"go/token"
-	"go/types"
 	"log"
-	"reflect"
-	"sort"
 )
 
 func main() {
@@ -24,57 +20,36 @@ func main() {
 		log.Fatal(firstErr)
 	}
 
-	var files []*ast.File
 	for _, pkg := range pkgs {
 		for _, f := range pkg.Files {
-			files = append(files, f)
+			ast.Inspect(f, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.CallExpr:
+					switch sel := x.Fun.(type) {
+					case *ast.SelectorExpr:
+						if sel.X.(*ast.Ident).Name == "gettext" && sel.Sel.Name == "Gettext" {
+							fmt.Println("msgstr:", evalStringValue(x.Args[0]))
+						}
+					}
+				}
+				return true
+			})
 		}
 	}
-
-	// https://github.com/golang/go/issues/26504
-	config := types.Config{
-		Importer:    importer.For("source", nil),
-		FakeImportC: true,
-	}
-	info := &types.Info{
-		Types:      make(map[ast.Expr]types.TypeAndValue),
-		Defs:       make(map[*ast.Ident]types.Object),
-		Uses:       make(map[*ast.Ident]types.Object),
-		Selections: make(map[*ast.SelectorExpr]*types.Selection),
-	}
-
-	pkg, err := config.Check("", fset, files, info)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, node := range getSortedKeys(info.Uses) {
-		fmt.Println("use:", node)
-	}
-
-	for _, f := range files {
-		ast.Inspect(f, func(n ast.Node) bool {
-			return true
-		})
-	}
-
-	_ = pkg
 }
 
-func getSortedKeys(m interface{}) []ast.Node {
-	mValue := reflect.ValueOf(m)
-	nodes := make([]ast.Node, mValue.Len())
-
-	keys := mValue.MapKeys()
-	for i := range keys {
-		nodes[i] = keys[i].Interface().(ast.Node)
-	}
-
-	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].Pos() == nodes[j].Pos() {
-			return nodes[i].End() < nodes[j].End()
+func evalStringValue(val interface{}) string {
+	switch val.(type) {
+	case *ast.BasicLit:
+		return val.(*ast.BasicLit).Value
+	case *ast.BinaryExpr:
+		if val.(*ast.BinaryExpr).Op != token.ADD {
+			return ""
 		}
-		return nodes[i].Pos() < nodes[j].Pos()
-	})
-
-	return nodes
+		left := evalStringValue(val.(*ast.BinaryExpr).X)
+		right := evalStringValue(val.(*ast.BinaryExpr).Y)
+		return left[0:len(left)-1] + right[1:len(right)]
+	default:
+		panic(fmt.Sprintf("unknown type: %v", val))
+	}
 }
